@@ -1,0 +1,7 @@
+node_modules/
+data/
+releases/
+output/
+.test-venv/
+*.log
+.env

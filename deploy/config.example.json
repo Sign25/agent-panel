@@ -1,0 +1,24 @@
+{
+  "origin": "https://panel.example.com",
+  "nodeName": "main",
+  "nodeAddress": "",
+  "port": 8787,
+  "agents": [
+    "claude"
+  ],
+  "paths": {
+    "claude": "/usr/bin/claude"
+  },
+  "projects": [
+    {
+      "name": "Site",
+      "cwd": "/srv/site"
+    }
+  ],
+  "brand": {
+    "name": "Agent Panel",
+    "mark": "",
+    "subtitle": "Claude Code sessions on your servers"
+  },
+  "language": "ru"
+}
