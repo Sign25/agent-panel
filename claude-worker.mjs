@@ -47,9 +47,6 @@ async function run(b){
  session=query({prompt:input(),options});let resultSeen=false;
  const event=(method,params)=>emit({type:'event',method,params});
  const forward=claudeEvents(event);
-// How full the chat's context window is, as Claude Code's /context counts it (summary: no extra API calls).
-const contextUsage=()=>process.env.PANEL_TEST==='1'||!session?.getContextUsage?Promise.resolve():session.getContextUsage({detail:'summary'}).then(r=>event('context/usage',{total:r.totalTokens,max:r.rawMaxTokens||r.maxTokens,percent:r.percentage,model:r.model,parts:(r.categories||[]).filter(c=>(c.kind==='used'||c.kind==='buffer')&&c.tokens>0).map(c=>({name:c.name,kind:c.kind,tokens:c.tokens}))})).catch(()=>{});
-let contextAt=0;
  let worked=false,staleTimer=null,missing=false;
  // Background work (shell commands, subagents, monitors) lives in this Claude process: the turn's result does not end the run
  // while some of it is still going. Claude continues by itself when a task reports back; then the run ends as usual.
@@ -59,7 +56,6 @@ let contextAt=0;
   if(m.session_id)emit({type:'session',id:m.session_id});
   if(m.type==='system'&&m.subtype==='init')event('turn/started',{turn:{id:m.session_id}});
   forward(m);
-  if(m.type==='assistant'&&Date.now()-contextAt>15000){contextAt=Date.now();contextUsage();}
   if(m.type==='system'&&m.subtype==='background_tasks_changed'){
    const next=new Map();for(const t of m.tasks||[]){if(t.ambient)continue;const type=String(t.task_type||'');next.set(t.task_id,background.get(t.task_id)||{id:t.task_id,kind:/agent/.test(type)?'agent':/monitor/.test(type)?'monitor':'command',title:String(t.description||type).split('\n')[0].slice(0,140),started:new Date().toISOString()});}
    background=next;event('background/changed',{tasks:[...background.values()]});
@@ -76,7 +72,6 @@ let contextAt=0;
   if(m.type==='result'&&!m.is_error&&background.size){clearTimeout(staleTimer);if(!waiting){waiting=true;capTimer=setTimeout(()=>end('completed'),6*3600000);}event('turn/waiting-background',{tasks:[...background.values()]});continue;}
   // The chat's previous Claude session is gone (its file was deleted or lives on another machine): start a new one.
   if(m.type==='result'&&m.is_error&&b.thread&&!worked&&/No conversation found/i.test((m.errors||[]).join('\n')+(m.result||''))){missing=true;resultSeen=true;break;}
-  if(m.type==='result'&&!m.is_error)await Promise.race([contextUsage(),new Promise(r=>setTimeout(r,4000))]);
   if(m.type==='result'){open=false;clearTimeout(staleTimer);clearTimeout(graceTimer);clearTimeout(capTimer);resultSeen=true;if(m.is_error)emit({type:'error',message:m.errors?.join('\n')||m.result||'Claude завершил задачу с ошибкой'});emit({type:'done',status:m.is_error?'failed':'completed'});break;}
  }
  if(!resultSeen)throw Error('Claude завершился без результата');

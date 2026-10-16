@@ -29,10 +29,8 @@ export function federation({db,data,nodeId,localInfo,origin,live=()=>true,topicO
    let own=null;try{own=db.prepare("SELECT title FROM session_titles WHERE agent='chat' AND id=?").get(t.session_id)?.title;}catch{}
    const name=own||(root&&Number(root.fork)===1&&original?base+' (копия в панели)':base);
    const named=Boolean(own);
-   // What the chat was started with: an unnamed chat is titled by it, as in the Claude app.
-   let first='';try{first=String(db.prepare('SELECT prompt FROM tasks WHERE session_id=? AND mail_message IS NULL ORDER BY created,rowid LIMIT 1').get(t.session_id)?.prompt||'').replace(/^Сессия из терминала:\s*/,'').split('\n')[0].slice(0,80);}catch{}
    const topic=t.mail_message?'письмо от другой сессии':String(t.prompt||'').split('\n')[0].slice(0,100);
-   return {id:nodeId+':'+t.session_id,host:nodeId,project:t.project,projectName:t.project_name,cwd:t.cwd,agent:t.agent||'codex',title:t.prompt.slice(0,100),name,named,first,topic,updated:t.created,open:['starting','running','stopping'].includes(t.status),kind:'panel',status:t.status,lastTask:t.id};});
+   return {id:nodeId+':'+t.session_id,host:nodeId,project:t.project,projectName:t.project_name,cwd:t.cwd,agent:t.agent||'codex',title:t.prompt.slice(0,100),name,named,topic,updated:t.created,open:['starting','running','stopping'].includes(t.status),kind:'panel',status:t.status,lastTask:t.id};});
   return [...terminal,...chats];
  }
  // The sessions worth writing to: open now or active in the last 7 days, newest first.
