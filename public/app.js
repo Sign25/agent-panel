@@ -109,7 +109,7 @@ function show(ok) { $('login').hidden = ok; $('workspace').hidden = !ok; $('logo
 function emptyChat() {
   $('messages').replaceChildren();
   const box = document.createElement('div'); box.className = 'chat-empty';
-  const mark = document.createElement('span'); mark.className = 'empty-mark'; mark.append(uiIcon(agentIcon(selectedAgent))); mark.setAttribute('aria-hidden','true');
+  const mark = document.createElement('span'); mark.className = 'empty-mark'; {const logo=document.createElement('img');logo.src='/icon.svg';logo.alt='';logo.width=64;logo.height=64;mark.append(logo);} mark.setAttribute('aria-hidden','true');
   const h = document.createElement('strong'); h.textContent = 'Над чем работаем?';
   const p = document.createElement('p'); p.textContent = 'Поставьте задачу своими словами. Агент разберётся в проекте, внесёт изменения и проверит результат.';
   const starters = document.createElement('div'); starters.className = 'starter-list';
@@ -244,12 +244,13 @@ $('serversForm').onsubmit=async e=>{e.preventDefault();const button=$('serversFo
 function updateActivity() {
   renderBackground();updateMainButton();
   const chosen = tasks.find(t => t.id === selected);
-  const active = tasks.find(t => String(t.project) === $('projects').value && activeStatuses.includes(t.status));
+  // Busy is per chat: other chats of the project stay free while one of them runs.
+  const active = chosen ? tasks.find(t => chainOf(t) === chainOf(chosen) && activeStatuses.includes(t.status)) : null;
   busy = Boolean(active);
   for(const id of ['model','reasoning','permissions','settingsButton'])$(id).disabled=!settings||submitting;
   $('agent').disabled=submitting||uploading; const last=chosen?.agent||'codex';
   $('agentHint').textContent=!chosen?tr('Выберите ИИ для первого сообщения проекта.'):last===selectedAgent?tr('Ответит {agent}. ИИ можно сменить перед любым сообщением.',{agent:agentName(selectedAgent)}):tr('Следующее сообщение получит {agent}. Он продолжит свою сессию и увидит ответы {previous}.',{agent:agentName(selectedAgent),previous:agentName(last)});
-  $('prompt').placeholder=mirrorTarget?.dialog?tr('Свой ответ на вопрос сессии…'):mirrorTarget?.live?tr('Сообщение для «{name}» в Remote Control…',{name:mirrorTarget.name}):selected&&(currentHost()?.agents||[]).length<2?tr('Сообщение для «{name}»…',{name:$('title').textContent}):tr('Сообщение для {agent}…',{agent:agentName(selectedAgent)}); renderAgentSwitch(); document.body.dataset.agent=selectedAgent;
+  $('prompt').placeholder=mirrorTarget?.dialog?tr('Свой ответ на вопрос сессии…'):mirrorTarget?.live?tr('Сообщение для «{name}» в Remote Control…',{name:mirrorTarget.name}):selected&&(currentHost()?.agents||[]).length<2?tr('Сообщение для «{name}»…',{name:$('title').textContent}):selected?tr('Сообщение для {agent}…',{agent:agentName(selectedAgent)}):tr('Чем могу помочь?'); renderAgentSwitch(); document.body.dataset.agent=selectedAgent;
   // A running Claude turn of this chat takes new messages mid-turn, as a working terminal session does.
   const joinable=Boolean(chosen&&chosen.status==='running'&&(chosen.agent||'codex')==='claude'&&!attachments.length);
   $('send').disabled = (busy&&!joinable) || !settings || submitting || uploading || (!$('prompt').value.trim() && !attachments.length);
@@ -319,13 +320,15 @@ async function choose(t) {
 }
 // A chat is the chain of turns of one session (session_id); several sessions can share a project folder.
 const chainOf=t=>t?.session_id||t?.id;
+// Chat titles as the sidebar shows them (own name or first message): the chat header uses the same title.
+const chatTitles=new Map();
 function chainTitle(t){const chain=chainOf(t),root=tasks.filter(x=>chainOf(x)===chain&&x.source_session).at(-1);
- return root?root.prompt.replace(/^Сессия из терминала:\s*/,''):($('projects').selectedOptions[0]?.textContent||tr('Чат проекта'));}
+ return root?root.prompt.replace(/^Сессия из терминала:\s*/,''):(chatTitles.get(chain)||$('projects').selectedOptions[0]?.textContent||tr('Чат проекта'));}
 function projectTranscript(current,generation){
  // Earlier turns read as one conversation, like the live view of a terminal session: the prompt (or the mail it answered),
- // the latest tool steps and the answers. A terminal session's chat shows its own chain; the project chat every other turn.
- const sessionChains=new Set(tasks.filter(t=>t.source_session).map(chainOf)),mine=sessionChains.has(chainOf(current));
- const older=tasks.filter(t=>String(t.project)===String(current.project)&&(mine?chainOf(t)===chainOf(current):!sessionChains.has(chainOf(t)))&&t.id!==current.id&&t.created<=current.created&&!t.source_session).reverse();
+ // the latest tool steps and the answers. Every chat shows only its own turns: chats of one project are separate
+ // conversations (each resumes its own session), so mixing their turns would show what the agent never saw.
+ const older=tasks.filter(t=>chainOf(t)===chainOf(current)&&t.id!==current.id&&t.created<=current.created&&!t.source_session).reverse();
  const page=30;let shown=0;
  const more=mapElement('button',null,'quiet transcript-more');more.type='button';
  async function load(){
@@ -416,7 +419,10 @@ function renderActivity(parent,x,context){
  const i=record.item;let status=i.status||'inProgress';
  if(i.isError||i.error||(typeof i.exitCode==='number'&&i.exitCode!==0))status='failed';
  const labels={preparing:'Подготовка',inProgress:'Выполняется',running:'Выполняется',completed:'Готово',failed:'Ошибка',declined:'Отклонено',interrupted:'Остановлено',background:'В фоне'};
- record.root.dataset.state=status;iconLabel(record.heading,{commandExecution:'terminal',fileChange:'file',webSearch:'globe',imageView:'image',sleep:'clock'}[i.type]||'tools',safeActivityText(activityTitle(i)));
+ record.root.dataset.state=status;
+ // The side pane lists the files of the chat from these marks.
+ {const file=i.input?.file_path||i.input?.notebook_path||(i.type==='fileChange'&&i.changes?.[0]?.path);if(file){record.root.dataset.file=file;record.root.dataset.tool=i.type==='fileChange'?'Edit':i.tool||'';}}
+ iconLabel(record.heading,{commandExecution:'terminal',fileChange:'file',webSearch:'globe',imageView:'image',sleep:'clock'}[i.type]||'tools',safeActivityText(activityTitle(i)));
  record.meta.textContent=[status==='completed'?null:tr(labels[status]||status),typeof i.durationMs==='number'?tr('{n} с',{n:(i.durationMs/1000).toFixed(1)}):typeof i.elapsedSeconds==='number'?tr('{n} с',{n:i.elapsedSeconds.toFixed(0)}):null,typeof i.exitCode==='number'?tr('код {code}',{code:i.exitCode}):null].filter(Boolean).join(' · ');
  const text=safeActivityText(record.text),tail=text.trim().split('\n').slice(-3).join('\n');record.preview.textContent=tail|| (status==='preparing'?tr('Готовит аргументы…'):status==='inProgress'?tr('Ожидаем вывод…'):'');
  record.command.textContent=safeActivityText(i.command||(i.input&&Object.keys(i.input).length?i.input:null)||i.arguments||record.partialInput||i.cwd||'');record.command.hidden=!record.command.textContent;
@@ -498,7 +504,7 @@ async function readEvents(generation) {
   }
   updateActivity();
 }
-$('loginForm').onsubmit = async e => { e.preventDefault(); try { csrf = (await api('login',{password:$('password').value})).csrf; $('password').value = ''; show(true); error(); await refresh(); } catch(e) { error(e); } };
+$('loginForm').onsubmit = async e => { e.preventDefault(); try { csrf = (await api('login',{password:$('password').value})).csrf; $('password').value = ''; show(true); refreshUsage(); error(); await refresh(); } catch(e) { error(e); } };
 $('logout').onclick = async () => { try { await api('logout',{}); csrf = ''; settings = null; selected = null; mirrorTarget = null; show(false); indicator('connection','Требуется вход','unknown'); } catch(e) { error(e); } };
 $('projectForm').onsubmit = async e => { e.preventDefault(); try { await api('projects',{name:$('projectName').value,cwd:$('projectPath').value}); await refresh();$('addProjectDialog').close();$('projectForm').reset();$('refreshTree').onclick();error(); } catch(e) { error(e); } };
 $('chatForm').onsubmit = async e => {
@@ -552,13 +558,14 @@ $('chatForm').onsubmit = async e => {
     error();
   } catch(e) { error(e); } finally { submitting=false; updateActivity(); }
 };
+$('newChatSide').onclick=()=>$('new').onclick();
 $('new').onclick = async () => {
   if(submitting || uploading) return; saveDraft(); selected=null; mirrorTarget=null; viewGeneration++; after=0; activeItems.clear(); approvalCount=0; approvalSignature='';
-  writeSession('panel-selected-'+draftProject,''); emptyChat(); $('approvals').replaceChildren(); $('stream').textContent=''; $('title').textContent=$('projects').selectedOptions[0]?.textContent||'Чат проекта'; $('title').title=''; restoreDraft(); renderHistory(); updateActivity(); sidebar(false); $('prompt').focus(); if(selectedAgent!==defaultAgent())await loadSettings(defaultAgent());
+  writeSession('panel-selected-'+draftProject,''); emptyChat(); $('approvals').replaceChildren(); $('stream').textContent=''; $('title').textContent=tr('Новый чат'); $('title').title=''; restoreDraft(); renderHistory(); updateActivity(); sidebar(false); $('prompt').focus(); if(selectedAgent!==defaultAgent())await loadSettings(defaultAgent());
 };
 $('projects').onchange = async () => {
   saveDraft(); draftProject=$('projects').value; selected=null; mirrorTarget=null; viewGeneration++; after=0; activeItems.clear(); approvalCount=0; approvalSignature='';
-  $('approvals').replaceChildren(); $('stream').textContent=''; $('title').textContent=$('projects').selectedOptions[0]?.textContent||'Чат проекта'; projectLabels(); emptyChat(); restoreDraft(); renderHistory(); updateActivity();
+  $('approvals').replaceChildren(); $('stream').textContent=''; $('title').textContent=tr('Новый чат'); projectLabels(); emptyChat(); restoreDraft(); renderHistory(); updateActivity();
   const saved=tasks.find(t=>String(t.project)===draftProject);
   if(saved) await choose(saved); else if(selectedAgent!==defaultAgent())await loadSettings(defaultAgent());
 };
@@ -587,7 +594,7 @@ function applyHost(){
 $('hosts').onchange=async()=>{
   if(submitting||uploading){$('hosts').value=selectedHost;return;}
   saveDraft();selectedHost=$('hosts').value;applyHost();selected=null;mirrorTarget=null;tasks=[];after=0;settings=null;draftProject='';viewGeneration++;settingsGeneration++;aiSettingsGeneration++;
-  activeItems.clear();approvalCount=0;approvalSignature='';historySignature='';$('projects').replaceChildren();$('approvals').replaceChildren();$('stream').textContent='';$('title').textContent=$('projects').selectedOptions[0]?.textContent||'Чат проекта';$('prompt').value='';attachments=[];renderAttachments();emptyChat();renderHistory();updateActivity();
+  activeItems.clear();approvalCount=0;approvalSignature='';historySignature='';$('projects').replaceChildren();$('approvals').replaceChildren();$('stream').textContent='';$('title').textContent=tr('Новый чат');$('prompt').value='';attachments=[];renderAttachments();emptyChat();renderHistory();updateActivity();
   try{await refresh();error();}catch(e){error(e);}
   refreshUsage();
 };
@@ -1009,13 +1016,14 @@ $('languageLabel').textContent=lang==='ru'?'English':'Русский';$('languag
 $('languageButton').onclick=()=>{try{localStorage.setItem('panel-language',lang==='ru'?'en':'ru');}catch{}location.reload();};
 startTranslation();
 // Claude plan limits of the selected server's account, in the header: weekly window first, 5-hour window next to it.
-let usageRequest=0;
+let usageRequest=0,planUsage=null;
 function resetLabel(iso){if(!iso)return '';const d=new Date(iso),days=(d-Date.now())/86400000;return days<1?d.toLocaleTimeString(locale(),{hour:'2-digit',minute:'2-digit'}):d.toLocaleString(locale(),{weekday:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});}
 async function refreshUsage(){
  const b=$('claudeUsage'),request=++usageRequest,host=selectedHost;
  if(!csrf||!currentHost()?.agents?.includes('claude')){b.hidden=true;return;}
  let u;try{u=await api('claude-usage');}catch{return;}
  if(request!==usageRequest||host!==selectedHost)return;
+ planUsage=u?.available?u:null;
  if(!u?.available||!u.seven_day){b.hidden=true;return;}
  const w=u.seven_day,f=u.five_hour,level=w.percent>=90?'high':w.percent>=70?'warn':'ok';
  b.replaceChildren();b.dataset.level=level;b.style.setProperty('--used',Math.min(100,w.percent)+'%');
@@ -1044,7 +1052,7 @@ async function toggleNotifications(){
  try{localStorage.setItem('panel-notify',notify.enabled?'1':'0');}catch{}notifyLabel();
 }
 async function showNotification(title,body,data){
- if(!notify.enabled)return;const options={body,data,tag:data.tag||undefined,icon:'/icon.svg',badge:'/icon.svg'};
+ if(!notify.enabled)return;const options={body,data,tag:data.tag||undefined,icon:'/app-icon-192.png',badge:'/app-favicon-48.png'};
  try{const reg=await swReady;if(reg){await reg.showNotification(title,options);return;}new Notification(title,options);}catch{}
 }
 const inFront=()=>!document.hidden&&document.hasFocus();
@@ -1111,8 +1119,8 @@ $('activeSessionsButton').onclick=openActiveSessions;
    await syncVisibility();const hosts=await get('local','hosts');
    await Promise.all(hosts.map(async host=>{
     refreshSessionSummary(host.id);
-    try{const [projects,sessions,key]=await Promise.all([get(host.id,'projects'),get(host.id,'session-directory'),get(host.id,'agent-sessions/key').catch(()=>null)]);
-     if(csrf!==auth)return;const value={host,projects,sessions,key};const i=nodes.findIndex(n=>n.host.id===host.id);if(i<0)nodes.push(value);else nodes[i]=value;
+    try{const [projects,sessions,key,states]=await Promise.all([get(host.id,'projects'),get(host.id,'session-directory'),get(host.id,'agent-sessions/key').catch(()=>null),get(host.id,'chats/state').catch(()=>[])]);
+     if(csrf!==auth)return;const value={host,projects,sessions,key,states:new Map((Array.isArray(states)?states:[]).map(s=>[s.key,s.state]))};const i=nodes.findIndex(n=>n.host.id===host.id);if(i<0)nodes.push(value);else nodes[i]=value;
     }catch{if(csrf!==auth)return;const i=nodes.findIndex(n=>n.host.id===host.id);if(i<0)nodes.push({host,projects:[],sessions:[],offline:true});else nodes[i].offline=true;}
     nodes.sort((a,b)=>hosts.findIndex(h=>h.id===a.host.id)-hosts.findIndex(h=>h.id===b.host.id));render();
    }));
@@ -1122,17 +1130,19 @@ $('activeSessionsButton').onclick=openActiveSessions;
  }
  function branch(label,key,cls,forceOpen=false,openByDefault=true){const d=el('details',undefined,cls);d.open=forceOpen||(expanded.get(key)??openByDefault);const summary=el('summary',label);if(cls==='tree-host'){summary.textContent='';summary.append(el('span',label,'tree-host-name'),el('small','','tree-host-count'),uiIcon('chevron','tree-chevron'));}d.append(summary);d.ontoggle=()=>{expanded.set(key,d.open);try{sessionStorage.setItem('panel-tree-expanded',JSON.stringify([...expanded]));}catch{}};return d;}
  window.openPanelProject=(host,project)=>openProject(host,project);
- const showInactive=new Set();
  function chatRow(n,c,search){
   const chain=String(c.id).slice(n.host.id.length+1),row=el('div',undefined,'tree-session tree-key tree-chat');
   const open=el('button',undefined,'tree-open');open.dataset.treeKey=(search?'search-chat:':'chat:')+n.host.id+':'+chain;
   const working=c.open||n.host.id===selectedHost&&tasks.some(t=>chainOf(t)===chain&&activeStatuses.includes(t.status));
   const state=working?'working':Date.now()-Date.parse(c.updated||0)<7*86400000?'chat':'closed';
   const dot=el('span',undefined,'tree-state');dot.dataset.state=state;dot.setAttribute('aria-label',tr({working:'Модель сейчас работает',chat:'работает в чате панели',closed:'закрыта'}[state]));
-  const [main,...rest]=String(c.name||c.projectName||'').split(' · ');
+  // A chat nobody named is titled by its first message, as in the Claude app; its project goes to the second line.
+  const auto=!c.named&&c.name===c.projectName?[c.first,c.topic].map(v=>String(v||'').replace(/^Сессия из терминала:\s*/,'')).find(v=>v&&!/^[0-9a-f]{8}$/.test(v)&&v!=='письмо от другой сессии')||'':'';
+  const [main,...rest]=String(auto||c.name||c.projectName||'').split(auto?'\u0000':' · ');
   const label=el('span',undefined,'tree-project-label'),text=el('span',undefined,'tree-key-text'),name=el('span',main,'tree-project-name');name.translate=false;
-  const sub=el('small',[rest.join(' · '),c.topic,ago(c.updated)].filter(Boolean).join(' · '),'tree-key-sub');sub.translate=false;text.append(name,el('span',rest.length?' · '+rest.join(' · '):'','tree-key-sep'),sub);
+  const sub=el('small',(auto?[ago(c.updated)]:[rest.join(' · '),String(c.topic||'').replace(/^Сессия из терминала:\s*/,''),ago(c.updated)]).filter(Boolean).join(' · '),'tree-key-sub');sub.translate=false;text.append(name,el('span',rest.length?' · '+rest.join(' · '):'','tree-key-sep'),sub);
   label.append(dot,text);
+  {const title=auto||main;chatTitles.set(chain,title);const cur=tasks.find(t=>t.id===selected);if(n.host.id===selectedHost&&cur&&chainOf(cur)===chain&&!tasks.some(t=>chainOf(t)===chain&&t.source_session)&&$('title').textContent!==title)$('title').textContent=title;}
   if(working){const w=el('small',undefined,'tree-working');w.append(el('span',undefined,'working-bars'));w.title=tr('Модель сейчас работает');label.append(w);}
   open.append(label);open.title=[c.name,c.projectName,c.cwd,c.topic,ago(c.updated)].filter(Boolean).join(' · ');
   const current=tasks.find(t=>t.id===selected);open.setAttribute('aria-current',String(n.host.id===selectedHost&&Boolean(current)&&chainOf(current)===chain));
@@ -1157,7 +1167,7 @@ $('activeSessionsButton').onclick=openActiveSessions;
   dot.setAttribute('aria-label',tr({working:'Модель сейчас работает',waiting:'Ждёт вашего ответа',live:'открыта',chat:'работает в чате панели',closed:'закрыта'}[state]));
   if(state==='live')dot.title=tr('Открыта сейчас')+(x.rcName?' · Remote Control «'+x.rcName+'»':'');
   // The project is worth a line only when the server's sessions come from different projects.
-  const mixed=new Set((Array.isArray(n.key)?n.key:[]).map(k=>k.projectName)).size>1;
+  const mixed=false;
   const [main,...rest]=String(x.title||'').split(' · '),qualifier=rest.join(' · ')||(mixed&&x.projectName&&x.projectName!==x.title&&x.projectName!==main?x.projectName:'');
   const label=el('span',undefined,'tree-project-label'),text=el('span',undefined,'tree-key-text'),name=el('span',main,'tree-project-name');name.translate=false;text.append(name);
   // A closed session tells when it was last used on its second line, so the name keeps the full width.
@@ -1210,75 +1220,83 @@ $('activeSessionsButton').onclick=openActiveSessions;
   const agents=[...new Set(source.map(s=>s.agent||'codex'))];
   return {agents,label:agents.length?agents.map(agentName).join(' + '):'ИИ не выбран',state:working.length?'working':agents.length?'idle':'unassigned',description:working.length?'Работает сейчас':known.length?'ИИ последней задачи':agents.length?'ИИ подключённых сессий':'ИИ не выбран'};
  }
+ // Sidebar like the Claude app: "Recent" — every chat of the last week in one list by time, with day dividers;
+ // "Projects" — every registered project as a folder with all its chats, newest first. Nothing is hidden by age.
+ const fullFolders=new Set();
+ // The "⋯" of a chat row, as in the Claude app: rename, archive (or return), delete.
+ function chatMenuButton(n,it,isArchived){
+  const b=el('button',undefined,'tree-menu');b.type='button';b.append(uiIcon('dots'));b.title=tr('Действия с чатом');b.setAttribute('aria-label',b.title);b.setAttribute('aria-haspopup','menu');b.dataset.treeKey='menu:'+it.key;
+  b.onclick=e=>{e.stopPropagation();openChatMenu(b,n,it,isArchived);};return b;}
+ function closeChatMenu(){document.querySelector('.chat-menu')?.remove();}
+ function openChatMenu(button,n,it,isArchived){
+  closeChatMenu();const menu=el('div',undefined,'chat-menu');menu.setAttribute('role','menu');
+  const item=(icon,text,fn,cls)=>{const x=el('button',undefined,'chat-menu-item'+(cls?' '+cls:''));x.type='button';x.setAttribute('role','menuitem');x.append(uiIcon(icon),el('span',tr(text)));x.onclick=()=>{closeChatMenu();fn();};menu.append(x);return x;};
+  item('pencil','Переименовать',()=>renameChat(n,it));
+  item('archive',isArchived?'Вернуть из архива':'В архив',()=>setChatState(n,it,isArchived?'active':'archived'));
+  item('trash','Удалить',()=>deleteChat(n,it),'danger');
+  document.body.append(menu);const r=button.getBoundingClientRect(),w=menu.offsetWidth,h=menu.offsetHeight;
+  menu.style.left=Math.max(8,Math.min(innerWidth-w-8,r.right-w))+'px';menu.style.top=(r.bottom+4+h>innerHeight-8?r.top-h-4:r.bottom+4)+'px';menu.querySelector('button').focus();
+ }
+ document.addEventListener('click',e=>{if(!e.target.closest('.chat-menu'))closeChatMenu();});
+ document.addEventListener('keydown',e=>{if(e.key==='Escape')closeChatMenu();});
+ async function hostApi(host,route,data){const r=await fetch(apiPath(route,host),{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(data)});const b=await readJson(r);if(!r.ok)throw Error(b.error||tr('Не получилось'));return b;}
+ function ask({title,text,value,ok,danger}){return new Promise(resolve=>{const d=el('dialog',undefined,'ask-dialog');const h=el('h2',tr(title));d.append(h);if(text)d.append(el('p',text,'dialog-intro'));
+  let input=null;if(value!==undefined){input=el('input');input.value=value;input.maxLength=150;d.append(input);}
+  const row=el('div',undefined,'ask-actions'),no=el('button',tr('Отмена'),'quiet'),yes=el('button',tr(ok),danger?'danger-fill':'primary');no.type=yes.type='button';row.append(no,yes);d.append(row);
+  const done=v=>{d.close();d.remove();resolve(v);};no.onclick=()=>done(null);yes.onclick=()=>done(input?input.value:true);d.addEventListener('cancel',e=>{e.preventDefault();done(null);});
+  if(input)input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();done(input.value);}};
+  document.body.append(d);d.showModal();(input||yes).focus();input?.select();});}
+ async function renameChat(n,it){
+  const old=it.kind==='key'?it.x.title:(chatTitles.get(String(it.c.id).slice(n.host.id.length+1))||it.c.name);
+  const title=await ask({title:'Переименовать чат',value:old||'',ok:'Сохранить'});if(title===null)return;
+  try{if(it.kind==='key')await hostApi(n.host.id,'agent-sessions/title',{agent:it.x.agent,id:it.x.id,title});else await hostApi(n.host.id,'chats/title',{chain:String(it.c.id).slice(n.host.id.length+1),title});
+   signature='';await reload();const cur=tasks.find(t=>t.id===selected);if(cur&&title.trim())$('title').textContent=chainTitle(cur);}catch(e){error(e);}}
+ async function setChatState(n,it,state){try{await hostApi(n.host.id,'chats/state',{key:it.key,state});n.states=n.states||new Map();if(state==='active')n.states.delete(it.key);else n.states.set(it.key,state);signature='';render();}catch(e){error(e);}}
+ async function deleteChat(n,it){
+  const name=it.kind==='key'?it.x.title:(chatTitles.get(String(it.c.id).slice(n.host.id.length+1))||it.c.name);
+  const yes=await ask({title:'Удалить чат?',text:tr('«{name}» пропадёт из панели вместе с историей. Вернуть его будет нельзя.',{name}),ok:'Удалить',danger:true});if(!yes)return;
+  try{const r=await hostApi(n.host.id,'chats/delete',{key:it.key});const cur=tasks.find(t=>t.id===selected);
+   if(n.host.id===selectedHost&&cur&&(r.chains||[]).includes(chainOf(cur)))await $('new').onclick();
+   if(it.kind==='key'){n.states=n.states||new Map();n.states.set(it.key,'deleted');}
+   signature='';await history();await reload();}catch(e){error(e);}}
+ const dayStart=t=>{const d=new Date(t);d.setHours(0,0,0,0);return d.getTime();};
+ function dayLabel(updated){const t=Date.parse(updated||0),today=dayStart(Date.now());if(t>=today)return tr('Сегодня');if(t>=today-86400000)return tr('Вчера');if(t>=today-6*86400000)return tr('На этой неделе');return tr('Раньше');}
  function renderTree(root,query,search=false){
   const scroll=root.scrollTop,focus=root.contains(document.activeElement)?document.activeElement?.dataset.treeKey:null;root.replaceChildren();
   for(const n of nodes){
    const groups=n.projects.map(p=>({...p,sessions:[]}));
    for(const s of n.sessions){let group=groups.find(p=>s.project!=null?String(p.id)===String(s.project):p.cwd===s.cwd);if(!group){group={id:null,name:s.projectName||s.cwd,cwd:s.cwd,sessions:[]};groups.push(group);}group.sessions.push(s);}
    const hostMatch=(n.host.name+' '+n.host.address).toLocaleLowerCase().includes(query);
-   const visible=groups.filter(p=>search&&$('showHiddenProjects').checked||!hiddenProjects.has(n.host.id+':'+p.cwd)).map(p=>{const all=hostMatch||(p.name+' '+p.cwd+' '+projectAI(n,p).label).toLocaleLowerCase().includes(query);return {...p,sessions:p.sessions,show:all||p.sessions.some(s=>(s.title+' '+s.agent+' '+s.id).toLocaleLowerCase().includes(query))};}).filter(p=>p.show)
-    // Only registered projects. Folders known only from terminal sessions (worktrees, /tmp) are those same sessions.
-    .filter(p=>p.id!=null)
-    // A project opened from a session row is reached through that row; in the sidebar it is not repeated.
-    .filter(p=>search||!(Array.isArray(n.key)&&n.key.some(k=>k.attached&&String(k.project)===String(p.id))));
-   if(query&&!visible.length&&!hostMatch&&!(Array.isArray(n.key)?n.key:[]).some(x=>[x.title,x.rcName,x.projectName,x.cwd].join(' ').toLocaleLowerCase().includes(query)))continue;
-   const hd=branch(n.host.name,(search?'search:':'')+'host:'+n.host.id,'tree-host',search);root.append(hd);hd.querySelector('summary').title=n.host.name+(n.host.address?' · '+n.host.address:'');
+   const showHidden=search&&$('showHiddenProjects').checked,isHidden=p=>hiddenProjects.has(n.host.id+':'+p.cwd);
+   const projects=groups.filter(p=>p.id!=null&&(showHidden||!isHidden(p)));
+   const hiddenIds=new Set(groups.filter(p=>p.id!=null&&isHidden(p)).map(p=>String(p.id)));
+   const keys=Array.isArray(n.key)?n.key:[],sessions=Array.isArray(n.sessions)?n.sessions:[];
+   for(const x of keys){const chat=x.chain&&sessions.find(c=>c.kind==='panel'&&c.id===n.host.id+':'+x.chain);x.chatUpdated=chat?.updated||null;x.chatOpen=Boolean(chat?.open);}
+   const attachedIds=new Set(keys.map(k=>k.chain).filter(Boolean)),later=(...v)=>v.filter(Boolean).map(String).sort().at(-1)||'';
+   // One list of everything that is a chat: terminal / Remote Control sessions and chats started in the panel.
+   const all=[...keys.map(x=>({kind:'key',x,project:x.project,updated:later(x.updated,x.chatUpdated),text:[x.title,x.rcName,x.projectName,x.cwd],now:Boolean(x.live||x.working||x.waiting||x.chatOpen)})),
+    ...sessions.filter(c=>c.kind==='panel'&&!attachedIds.has(String(c.id).slice(n.host.id.length+1))).map(c=>({kind:'chat',c,project:c.project,updated:String(c.updated||''),text:[c.name,c.topic,c.projectName],now:Boolean(c.open)}))]
+    .filter(it=>showHidden||it.project==null||!hiddenIds.has(String(it.project)))
+    .filter(it=>!query||hostMatch||it.text.join(' ').toLocaleLowerCase().includes(query)||projects.some(p=>String(p.id)===String(it.project)&&(p.name+' '+p.cwd).toLocaleLowerCase().includes(query)))
+    .sort((a,b)=>b.updated.localeCompare(a.updated));
+   // Chats the owner archived wait in the archive at the bottom; deleted ones are gone.
+   const states=n.states||new Map();for(const it of all)it.key=it.kind==='key'?'session:'+it.x.agent+':'+it.x.id:'chat:'+String(it.c.id).slice(n.host.id.length+1);
+   const stateOf=it=>states.get(it.key)||(it.kind==='key'&&it.x.chain?states.get('chat:'+it.x.chain):'')||'';
+   const items=all.filter(it=>!stateOf(it)),archived=all.filter(it=>stateOf(it)==='archived');
+   const row=(it,scope)=>{const r=it.kind==='key'?keyRow(n,it.x,search):chatRow(n,it.c,search);const b=r.querySelector('.tree-open');if(scope&&b)b.dataset.treeKey=scope+':'+b.dataset.treeKey;r.append(chatMenuButton(n,it,stateOf(it)==='archived'));return r;};
+   const shownProjects=projects.filter(p=>!query||hostMatch||(p.name+' '+p.cwd).toLocaleLowerCase().includes(query)||items.some(it=>String(it.project)===String(p.id)));
+   if(query&&!items.length&&!shownProjects.length&&!hostMatch)continue;
+   // One server: the chats go straight into the list, without a server heading.
+   const single=nodes.length===1&&!search,hd=single?root:branch(n.host.name,(search?'search:':'')+'host:'+n.host.id,'tree-host',search);
+   if(!single){root.append(hd);hd.querySelector('summary').title=n.host.name+(n.host.address?' · '+n.host.address:'');const openCount=keys.filter(x=>x.live).length;hd.querySelector('.tree-host-count').textContent=openCount?tr('открыто: {n}',{n:openCount}):'';}
    if(n.offline)hd.append(el('p','Нет связи с VPS','tree-status'));
-   // Sessions first: everything that worked through Remote Control or is open now, in any folder of the server.
-   if(Array.isArray(n.key)){
-    const match=x=>!query||hostMatch||[x.title,x.rcName,x.projectName,x.cwd].join(' ').toLocaleLowerCase().includes(query);
-    const sessions=Array.isArray(n.sessions)?n.sessions:[];
-    for(const x of n.key){const chat=x.chain&&sessions.find(c=>c.kind==='panel'&&c.id===n.host.id+':'+x.chain);x.chatUpdated=chat?.updated||null;x.chatOpen=Boolean(chat?.open);if(chat&&Date.now()-Date.parse(chat.updated)<7*86400000)x.active=true;}
-    const all=n.key.filter(match),showOld=search&&query||showInactive.has(n.host.id),shown=all.filter(x=>showOld||x.active);let hiddenCount=all.length-shown.length;
-    for(const x of shown)hd.append(keyRow(n,x,search));
-    // Chats started in the panel (not attached to a terminal session) are sessions too: one row each.
-    const attachedIds=new Set(n.key.map(k=>k.chain).filter(Boolean)),recentLimit=Date.now()-7*86400000;
-    const chats=sessions.filter(c=>c.kind==='panel'&&!attachedIds.has(String(c.id).slice(n.host.id.length+1))&&(!query||hostMatch||[c.name,c.topic,c.projectName].join(' ').toLocaleLowerCase().includes(query)));
-    // A row for a chat that is a session of its own: working now, named by the owner, or the project's latest chat.
-    // One-off older chats of a project stay under "inactive".
-    // The latest chat of a project counts the chats of its terminal sessions too: an older one-off chat stays inactive.
-    const latest=new Map();for(const c of sessions.filter(c=>c.kind==='panel')){const k=String(c.project);if(!latest.has(k)||String(c.updated)>String(latest.get(k).updated))latest.set(k,c);}
-    const recentChats=chats.filter(c=>c.open||(c.named||latest.get(String(c.project))===c)&&Date.parse(c.updated||0)>recentLimit),oldChats=chats.filter(c=>!recentChats.includes(c));
-    for(const c of [...recentChats,...(showOld?oldChats:[])].sort((a,b)=>String(b.updated).localeCompare(String(a.updated))))hd.append(chatRow(n,c,search));
-    n.oldChats=oldChats.length;n.chatProjects=new Set(recentChats.map(c=>String(c.project)));
-    const openCount=n.key.filter(x=>x.live).length;hd.querySelector('.tree-host-count').textContent=openCount?tr('открыто: {n}',{n:openCount}):'';
-    hiddenCount+=showOld?0:n.oldChats;
-    if(!all.length&&!n.key.length&&!sessions.some(c=>c.kind==='panel')&&!query)hd.append(el('small',tr('Сессий пока нет'),'tree-empty'));
-    if(hiddenCount||showInactive.has(n.host.id)&&(all.some(x=>!x.active)||n.oldChats)){const more=el('button',undefined,'tree-more');more.textContent=tr(showOld?'Скрыть неактивные':'Ещё неактивные: {n}',{n:hiddenCount});more.prepend(uiIcon('chevron'));more.dataset.open=String(showOld);more.onclick=()=>{if(showInactive.has(n.host.id))showInactive.delete(n.host.id);else showInactive.add(n.host.id);signature='';render();};hd.append(more);}
-   }
-   // A project's own chat (not a terminal session's) reads like a session: working, used lately, or idle.
-   const attachedChains=new Set((Array.isArray(n.key)?n.key:[]).map(k=>k.chain).filter(Boolean));
-   const chatOf=p=>{const own=(Array.isArray(n.sessions)?n.sessions:[]).filter(c=>c.kind==='panel'&&String(c.project)===String(p.id)&&!attachedChains.has(String(c.id).slice(n.host.id.length+1)));
-    const running=own.some(c=>c.open)||n.host.id===selectedHost&&tasks.some(t=>String(t.project)===String(p.id)&&activeStatuses.includes(t.status)&&!attachedChains.has(chainOf(t)));
-    const updated=own.map(c=>c.updated).filter(Boolean).sort().at(-1)||null;return {running,updated,recent:Boolean(updated)&&Date.now()-Date.parse(updated)<7*86400000};};
-   // Projects are folders to start in; their chats are listed above as sessions.
-   const lively=[],idle=visible.filter(p=>search||!n.chatProjects?.has(String(p.id)));
-   const projBox=Array.isArray(n.key)&&idle.length?branch(tr('Проекты')+' · '+idle.length,(search?'search:':'')+'projects:'+n.host.id,'tree-projects',Boolean(search&&query),false):hd;
-   for(const p of [...lively,...idle]){const box=lively.includes(p)?hd:projBox;
-    const key=n.host.id+':'+p.cwd,row=el('div',undefined,'tree-session tree-project');
-    const target=p.mail_id?{id:n.host.id+':project-'+p.mail_id}:p.sessions.find(s=>s.lastTask)||p.sessions[0];
-    const open=el('button',undefined,'tree-open');open.dataset.treeKey=(search?'search-project:':'project:')+key;
-    const ai=projectAI(n,p),label=el('span',undefined,'tree-project-label'),name=el('span',p.name,'tree-project-name'),path=el('small',p.cwd,'tree-path'),badge=el('small',ai.label,'tree-agent');
-    badge.dataset.state=ai.state;badge.title=tr(ai.description);badge.setAttribute('aria-label',tr(ai.label)+' · '+tr(ai.description));
-    if(ai.state!=='unassigned')badge.prepend(uiIcon(agentIcon(ai.agents[0])));name.translate=false;path.translate=false;
-    const chat=chatOf(p),pstate=chat.running?'working':chat.recent?'chat':'closed',dot=el('span',undefined,'tree-state');dot.dataset.state=pstate;
-    const [pmain,...prest]=String(p.name).split(' · '),pqual=prest.join(' · ');name.textContent=pmain;
-    const text=el('span',undefined,'tree-key-text'),sub=el('small',[pqual,chat.updated?tr('чат проекта · {when}',{when:ago(chat.updated)}):tr('чат проекта')].filter(Boolean).join(' · '),'tree-key-sub');text.append(name,el('span',pqual?' · '+pqual:'','tree-key-sep'),sub);label.append(dot,text);
-    if(chat.running){const w=el('small',undefined,'tree-working');w.append(el('span',undefined,'working-bars'));w.title=tr('Модель сейчас работает');label.append(w);}const meta=el('span',undefined,'tree-meta');meta.append(path,badge);open.append(label,meta);if(ai.state==='unassigned')badge.hidden=true;else badge.dataset.agent=ai.agents[0];open.title=p.cwd+' · '+tr(ai.label)+' · '+tr(ai.description);
-    open.setAttribute('aria-label',p.name+' · '+tr(ai.label)+' · '+tr(ai.description));
-    // Only one highlight: a project row is current only when its own chat (not a terminal session's chat) is open.
-    const cur=tasks.find(t=>t.id===selected),sessionChat=Boolean(cur)&&tasks.some(t=>chainOf(t)===chainOf(cur)&&t.source_session);
-    open.setAttribute('aria-current',String(n.host.id===selectedHost&&String(p.id)===draftProject&&!sessionChat));
-    open.disabled=Boolean(n.offline);
-    open.onclick=()=>p.id!=null?openProject(n.host.id,p.id):target&&writeTo(target);
-    const send=el('button',undefined,'tree-write');send.append(uiIcon('message'));send.title=tr('Написать проекту {name}',{name:p.name});send.dataset.treeKey=(search?'search-write-project:':'write-project:')+key;send.setAttribute('aria-label',tr('Написать проекту {name}',{name:p.name}));send.disabled=!target;send.onclick=()=>writeTo(target);
-    const visibility=el('button',undefined,'tree-hide');const hidden=hiddenProjects.has(key);visibility.append(uiIcon(hidden?'eye':'eye-off'));visibility.title=tr(hidden?'Показать проект {name}':'Скрыть проект {name}',{name:p.name});visibility.setAttribute('aria-label',visibility.title);visibility.dataset.treeKey=(search?'search-':'')+'hide-project:'+key;visibility.onclick=()=>hideProject(key,!hidden);if(hidden){row.classList.add('project-hidden');badge.hidden=false;badge.append(document.createTextNode(' · '+tr('Скрыт')));}const counts=p.id!=null?projectSessions(n.host.id,p.id):{total:0};
-    if(counts.total){const term=el('button',undefined,'tree-terminal');term.append(uiIcon('terminal'),el('span',String(counts.total)));term.dataset.live=String(counts.live>0);term.title=tr('Сессии из терминала: {n}',{n:counts.total})+(counts.live?' · '+tr('открыто: {n}',{n:counts.live}):'');term.setAttribute('aria-label',term.title+' · '+p.name);term.dataset.treeKey=(search?'search-terminal:':'terminal:')+key;term.onclick=async()=>{await openProject(n.host.id,p.id);if(selectedHost===n.host.id&&$('projects').value===String(p.id))openTerminalSessions();};row.classList.add('has-terminal');row.append(open,term,send,visibility);}
-    else row.append(open,send,visibility);
-    box.append(row);
-   }
-   if(projBox!==hd&&idle.length)hd.append(projBox);
-   if(!visible.length&&projBox===hd)hd.append(el('small','Нет проектов или подключённых сессий','tree-empty'));
+   // One list of every chat, newest first, split by day as in the Claude app. Older than a week: the first 15, the rest on demand.
+   const older=items.slice(30).filter(it=>!it.now),fkey=n.host.id+':older';if(items.length)hd.append(el('div',tr('Недавние'),'tree-day'));
+   const showOlder=fullFolders.has(fkey)||Boolean(search&&query),list=items.filter(it=>!older.includes(it)||showOlder);
+   for(const it of list)hd.append(row(it,''));
+   if(older.length&&!(search&&query)){const more=el('button',undefined,'tree-more');more.textContent=tr(showOlder?'Свернуть':'Все чаты: ещё {n}',{n:older.length});more.prepend(uiIcon('chevron'));more.dataset.open=String(showOlder);more.onclick=()=>{if(fullFolders.has(fkey))fullFolders.delete(fkey);else fullFolders.add(fkey);signature='';render();};hd.append(more);}
+   if(archived.length){const box=branch(tr('Архив')+' · '+archived.length,(search?'search:':'')+'archive:'+n.host.id,'tree-archive',Boolean(search&&query),false);for(const it of archived)box.append(row(it,'archive'));hd.append(box);}
+   if(!items.length&&!archived.length&&!query)hd.append(el('small',tr('Сессий пока нет'),'tree-empty'));
   }
   if(!root.childElementCount)root.append(el('p',query?'Ничего не найдено':'Сессии появятся после подключения','tree-status'));
   if(focus)root.querySelector('[data-tree-key="'+CSS.escape(focus)+'"]')?.focus({preventScroll:true});root.scrollTop=scroll;
@@ -1307,3 +1325,101 @@ document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelect
 // Follow the visible viewport when the tablet keyboard overlays the layout.
 function fitTabletViewport(){document.documentElement.style.setProperty('--viewport-height',(window.visualViewport?.height||innerHeight)+'px');}
 window.visualViewport?.addEventListener('resize',fitTabletViewport);window.addEventListener('resize',fitTabletViewport);fitTabletViewport();
+
+// Side pane, as in the Claude app: what the agent does now, the pictures of the chat and the files it works on.
+// Everything comes from the open conversation itself; a file opens in the pane as text or as a picture.
+(()=>{
+ const pane=$('workPane');if(!pane)return;
+ const imageExt=/\.(png|jpe?g|webp|gif)$/i,toolWord={Write:'создан',Edit:'изменён',MultiEdit:'изменён',NotebookEdit:'изменён',Read:'открыт'};
+ let timer=0,viewing='';
+ const node=(tag,text,cls)=>{const e=document.createElement(tag);if(text!==undefined)e.textContent=text;if(cls)e.className=cls;return e;};
+ const isOpen=()=>!pane.hidden,wide=()=>matchMedia('(min-width:1200px)').matches;
+ function setOpen(v){pane.hidden=!v;$('workspace').classList.toggle('pane-open',v);$('paneButton').setAttribute('aria-expanded',String(v));if(wide())try{localStorage.setItem('panel-pane',v?'1':'');}catch{}if(v)refresh();else closeViewer();}
+ function images(){const seen=new Set(),out=[];for(const img of $('messages').querySelectorAll('img')){const src=img.getAttribute('src');if(!src||seen.has(src))continue;seen.add(src);out.push({src,alt:img.alt||''});}return out.reverse();}
+ function files(){const map=new Map();for(const r of $('messages').querySelectorAll('[data-file]')){const p=r.dataset.file,f=map.get(p)||{path:p,tools:new Set(),state:''};f.tools.add(r.dataset.tool);f.state=r.dataset.state||f.state;map.delete(p);map.set(p,f);}return [...map.values()].reverse();}
+ function now(){const steps=[...$('messages').querySelectorAll('[data-state="inProgress"],[data-state="preparing"],[data-state="running"]')],last=steps.at(-1);
+  const state=$('activity')?.textContent||'';const step=last?.querySelector('.ui-label')?.textContent||'';return step?state+' · '+step:state||'—';}
+ function refresh(){
+  const list=files(),shown=new Set(images().map(p=>p.src)),pics=[...images(),...list.filter(f=>imageExt.test(f.path)).map(f=>({src:apiPath('files/image?path='+encodeURIComponent(f.path)),alt:f.path.split('/').pop()})).filter(p=>!shown.has(p.src))];$('paneCount').textContent=String(pics.length+list.length);$('paneCount').hidden=!(pics.length+list.length);
+  if(!isOpen())return;
+  $('paneNow').textContent=now();
+  $('paneImagesCount').textContent=pics.length?String(pics.length):'';$('paneFilesCount').textContent=list.length?String(list.length):'';
+  const box=$('paneImages');box.replaceChildren();
+  if(!pics.length)box.append(node('p',tr('В этом чате картинок пока нет'),'pane-empty'));
+  for(const p of pics){const b=node('button',undefined,'pane-thumb');b.type='button';b.title=p.alt||'';const img=node('img');img.src=p.src;img.alt=p.alt;img.loading='lazy';img.onerror=()=>{b.remove();const left=box.querySelectorAll('.pane-thumb').length;$('paneImagesCount').textContent=left?String(left):'';if(!left&&!box.querySelector('.pane-empty'))box.append(node('p',tr('В этом чате картинок пока нет'),'pane-empty'));};b.append(img);b.onclick=()=>showImage(p.src,p.alt||tr('Картинка'));box.append(b);}
+  const fl=$('paneFiles');fl.replaceChildren();
+  if(!list.length)fl.append(node('p',tr('Агент в этом чате ещё не трогал файлы'),'pane-empty'));
+  for(const f of list){const b=node('button',undefined,'pane-file');b.type='button';b.title=f.path;b.dataset.state=f.state;
+   const name=node('strong',f.path.split('/').pop()),dir=node('small',f.path.split('/').slice(0,-1).join('/')||'/');name.translate=false;dir.translate=false;
+   const words=[...new Set([...f.tools].map(t=>toolWord[t]).filter(Boolean))].map(w=>tr(w));
+   const text=node('span',undefined,'pane-file-text');text.append(name,dir);b.append(uiIcon(imageExt.test(f.path)?'image':'file'),text,node('small',words.join(', '),'pane-file-kind'));
+   b.onclick=()=>showFile(f.path);fl.append(b);}
+ }
+ function openViewer(name,meta){viewing=name;$('paneBody').hidden=true;$('paneViewer').hidden=false;$('paneViewerName').textContent=name;$('paneViewerMeta').textContent=meta||'';$('paneViewerBody').replaceChildren();}
+ function closeViewer(){viewing='';$('paneViewer').hidden=true;$('paneBody').hidden=false;}
+ function showImage(src,name){openViewer(name,'');const img=node('img');img.src=src;img.alt=name;img.onerror=()=>$('paneViewerBody').replaceChildren(node('p',tr('Файла уже нет: агент удалил его или он был во временной папке'),'pane-empty'));$('paneViewerBody').append(img);$('paneViewerOpen').href=src;$('paneViewerOpen').hidden=false;}
+ async function showFile(p){
+  if(imageExt.test(p)){showImage(apiPath('files/image?path='+encodeURIComponent(p)),p.split('/').pop());$('paneViewerMeta').textContent=p;return;}
+  openViewer(p.split('/').pop(),p);$('paneViewerOpen').hidden=true;$('paneViewerBody').append(node('p',tr('Загружаем…'),'pane-empty'));
+  try{const f=await api('files/text?path='+encodeURIComponent(p));if(viewing!==p.split('/').pop())return;
+   $('paneViewerMeta').textContent=[p,Math.ceil(f.size/1024)+' КБ',ago(f.modified)].join(' · ');
+   const pre=node('pre',f.text,'pane-code');pre.translate=false;$('paneViewerBody').replaceChildren(pre);
+   if(f.truncated)$('paneViewerBody').append(node('p',tr('Показано начало файла: первые 400 КБ'),'pane-empty'));}
+  catch(e){$('paneViewerBody').replaceChildren(node('p',e.message,'pane-empty'));}
+ }
+ const later=()=>{clearTimeout(timer);timer=setTimeout(refresh,400);};
+ new MutationObserver(later).observe($('messages'),{childList:true,subtree:true,attributes:true,attributeFilter:['data-state','data-file','src']});
+ setInterval(()=>{if(isOpen()&&!document.hidden)$('paneNow').textContent=now();},1500);
+ $('paneButton').onclick=()=>setOpen(!isOpen());$('closePane').onclick=()=>setOpen(false);$('paneBack').onclick=closeViewer;
+ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&isOpen()&&!wide()&&!document.querySelector('dialog[open]')){if(viewing)closeViewer();else setOpen(false);}});
+ try{if(wide()&&localStorage.getItem('panel-pane')==='1')setOpen(true);}catch{}
+})();
+
+// Context ring in the composer, as in Claude Code: how full the open chat's context window is; a click shows it in
+// numbers together with every Claude plan limit of the server's account.
+(()=>{
+ const ring=$('contextRing');if(!ring)return;
+ const state={chain:'',data:null,at:0};let card=null;
+ const compact=n=>new Intl.NumberFormat(locale(),{notation:'compact',maximumFractionDigits:1}).format(n);
+ function paint(){const d=state.data,p=d?Math.max(0,Math.min(100,d.percent||0)):0;
+  ring.hidden=!(d||planUsage);ring.dataset.level=p>=85?'high':p>=60?'warn':'ok';
+  ring.querySelector('.ring-fill').setAttribute('stroke-dasharray',(d?Math.max(p,2):0)+' 100');
+  const label=d?tr('Контекст заполнен на {p}%',{p:Math.round(p)}):tr('Контекст и лимиты');ring.title=label;$('contextRingLabel').textContent=label;
+  if(card)fill();}
+ async function refresh(){
+  const cur=tasks.find(t=>t.id===selected),chain=cur?chainOf(cur):'';
+  if(!chain){if(state.chain){state.chain='';state.data=null;}paint();return;}
+  const busy=tasks.some(t=>chainOf(t)===chain&&activeStatuses.includes(t.status));
+  if(chain===state.chain&&Date.now()-state.at<(busy?6000:60000))return;
+  if(chain!==state.chain)state.data=null;state.chain=chain;state.at=Date.now();
+  try{const d=await api('chats/context?chain='+encodeURIComponent(chain));if(state.chain!==chain)return;state.data=d&&d.available!==false&&typeof d.total==='number'?d:null;}catch{}
+  paint();}
+ const node=(tag,text,cls)=>{const e=document.createElement(tag);if(text!=null)e.textContent=text;if(cls)e.className=cls;return e;};
+ function meter(title,percent,note){const row=node('div',null,'ctx-row'),head=node('div',null,'ctx-head');head.append(node('span',title),node('strong',Math.round(percent)+'%'));
+  const bar=node('div',null,'ctx-bar');bar.dataset.level=percent>=85?'high':percent>=60?'warn':'ok';const f=node('span');f.style.width=Math.min(100,percent)+'%';bar.append(f);row.append(head,bar);if(note)row.append(node('small',note));return row;}
+ // What fills the window, coloured like Claude Code's /context: one segment per category, a legend under the bar.
+ const partColors=[[/system prompt/i,'#9b8ec9','Системный промпт'],[/system tools/i,'#5a9fd6','Инструменты'],[/mcp/i,'#3fb0a5','MCP-инструменты'],[/agent/i,'#e0a43a','Агенты'],[/memory/i,'#e58a5c','Память'],[/skill/i,'#d46f9f','Навыки'],[/message/i,'#c6613f','Сообщения'],[/buffer|compact/i,'buffer','Резерв на сжатие']];
+ function partOf(p){const m=partColors.find(([re])=>re.test(p.name));return {color:m?m[1]:'#a9a39a',name:m?tr(m[2]):p.name};}
+ function contextMeter(d){const row=node('div',null,'ctx-row'),head=node('div',null,'ctx-head');head.append(node('span',tr('{used} из {max} токенов',{used:compact(d.total),max:compact(d.max)})),node('strong',Math.round(d.percent)+'%'));
+  const bar=node('div',null,'ctx-bar ctx-stack');const parts=(d.parts&&d.parts.length?d.parts:[{name:'Messages',tokens:d.total}]);const legend=node('div',null,'ctx-legend');
+  for(const p of parts){const c=partOf(p),w=Math.max(.6,p.tokens/d.max*100);const seg=node('span');seg.style.width=w+'%';if(c.color==='buffer')seg.className='ctx-buffer';else seg.style.background=c.color;seg.title=c.name+': '+compact(p.tokens);bar.append(seg);
+   const li=node('span',null,'ctx-key'),dot=node('i');if(c.color==='buffer')dot.className='ctx-buffer';else dot.style.background=c.color;li.append(dot,node('span',c.name),node('b',compact(p.tokens)));legend.append(li);}
+  row.append(head,bar);if(d.parts?.length)row.append(legend);row.append(node('small',[d.model,d.source==='file'?tr('по последнему ответу'):tr('сейчас')].filter(Boolean).join(' · ')));return row;}
+ function fill(){card.replaceChildren();const d=state.data;
+  const sec=node('section');sec.append(node('h3',tr('Контекст')));
+  if(d){sec.append(contextMeter(d));
+   if(d.percent>=80)sec.append(node('p',tr('Окно почти заполнено: Claude скоро сожмёт историю чата, детали ранних сообщений могут потеряться.'),'ctx-note'));}
+  else sec.append(node('p',tr(state.chain?'Цифры появятся после следующего ответа агента.':'В новом чате контекст пуст.'),'ctx-note'));
+  card.append(sec);
+  const u=planUsage;const lim=node('section');lim.append(node('h3',tr('Лимиты Claude')));
+  const rows=[['five_hour','5 часов'],['seven_day','Неделя'],['seven_day_opus','Неделя · Opus'],['seven_day_sonnet','Неделя · Sonnet']];
+  let any=false;if(u)for(const [k,name] of rows){const w=u[k];if(!w)continue;any=true;lim.append(meter(tr(name),w.percent,w.resetsAt?tr('сброс {when}',{when:resetLabel(w.resetsAt)}):''));}
+  if(!any)lim.append(node('p',tr('Лимиты тарифа сейчас недоступны.'),'ctx-note'));card.append(lim);}
+ function close(){card?.remove();card=null;ring.setAttribute('aria-expanded','false');}
+ ring.onclick=e=>{e.stopPropagation();if(card){close();return;}card=node('div',null,'ctx-card');card.setAttribute('role','dialog');card.setAttribute('aria-label',tr('Контекст и лимиты'));fill();document.body.append(card);
+  const r=ring.getBoundingClientRect(),w=card.offsetWidth;card.style.left=Math.max(8,Math.min(innerWidth-w-8,r.right-w+40))+'px';card.style.bottom=(innerHeight-r.top+10)+'px';ring.setAttribute('aria-expanded','true');
+  if(!planUsage)refreshUsage().then(()=>card&&fill());};
+ document.addEventListener('click',e=>{if(card&&!card.contains(e.target))close();});
+ document.addEventListener('keydown',e=>{if(e.key==='Escape'&&card){close();ring.focus();}});
+ setInterval(()=>{if(csrf&&!document.hidden)refresh();},2000);
+})();
