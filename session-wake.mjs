@@ -14,15 +14,22 @@ export function sessionWaker({db,env=process.env}){
  // Processes of a session: claude processes started with its id. A Remote Control server or bg-spare worker has no
  // terminal prompt of its own, so it cannot be typed into.
  function processes(match){const out=[];for(const pid of readdirSync('/proc')){if(!/^\d+$/.test(pid))continue;let line,cwd;try{line=readFileSync('/proc/'+pid+'/cmdline','utf8').split('\0').join(' ');if(!/(^|\/)claude(\s|$)/.test(line.split(' ')[0]+' '))continue;cwd=realpathSync('/proc/'+pid+'/cwd');}catch{continue;}if(/(^|\/)claude(\s|$)/.test(line.split(' ')[0]+' ')&&match(line,cwd))out.push(Number(pid));}return out;}
+ // What is typed after the prompt sign: '' for an empty prompt, null when no prompt is visible or a dialog waits.
+ function promptText(p){
+  let screen;try{screen=execFileSync('tmux',['-S',p.sock,'capture-pane','-e','-p','-t',p.pane],{encoding:'utf8',timeout:5000,stdio:['ignore','pipe','ignore']});}catch{return null;}
+  const lines=screen.split('\n').map(l=>l.replace(/\x1b\[2m.*?(?=\x1b\[(0|22)?m|$)/g,'').replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g,'').replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/[│┃]/g,'').trimEnd()).filter(l=>l.trim()).slice(-24);
+  if(lines.slice(-12).some(l=>/Do you want to|Esc to cancel|❯\s*\d+\./.test(l)))return null;
+  // Claude Code puts a no-break space after the prompt sign.
+  const at=lines.findLastIndex(l=>/^\s*[❯>](\s|$)/.test(l));if(at<0)return null;
+  // The input box: the prompt line and its continuation lines up to the rule under the box.
+  const box=[lines[at].replace(/^\s*[❯>]\s?/,'')];for(const l of lines.slice(at+1)){if(/^\s*[─━]{8,}/.test(l))break;box.push(l.trim());}
+  return box.join('\n').trim();
+ }
  // Typing is safe only into an empty prompt: never while a permission dialog waits (Enter or a digit would answer it)
  // and never on top of the owner's unsent draft. Dim text after the prompt sign is Claude's own suggestion, not a draft.
- function idle(p){
-  let screen;try{screen=execFileSync('tmux',['-S',p.sock,'capture-pane','-e','-p','-t',p.pane],{encoding:'utf8',timeout:5000,stdio:['ignore','pipe','ignore']});}catch{return false;}
-  const lines=screen.split('\n').map(l=>l.replace(/\x1b\[2m.*?(?=\x1b\[(0|22)?m|$)/g,'').replace(/\x1b\[[0-9;?]*[A-Za-z]/g,'').replace(/[│┃]/g,'').trimEnd()).filter(l=>l.trim()).slice(-12);
-  if(lines.some(l=>/Do you want to|Esc to cancel|❯\s*\d+\./.test(l)))return false;
-  const prompt=lines.findLast(l=>/^\s*[❯>]( |$)/.test(l));
-  return prompt!==undefined&&/^\s*[❯>]\s*$/.test(prompt);
- }
+ const idle=p=>promptText(p)==='';
+ const pause=ms=>new Promise(r=>setTimeout(r,ms));
+ async function until(fn,ms){for(const end=Date.now()+ms;Date.now()<end;){const v=fn();if(v)return v;await pause(250);}return fn();}
  const woke=new Map(),missed=new Map();
  const prune=()=>{const old=Date.now()-1800000;for(const m of [woke,missed])for(const [k,t] of m)if(t<old)m.delete(k);};
  // ids: candidate session uuids, most likely first; exact: only those (mail addressed to one session).
@@ -45,14 +52,25 @@ export function sessionWaker({db,env=process.env}){
   return sawPane||!candidates.length?null:{nopane:true};
  }
  // Typing the owner's message into an open session (the panel chat of a Remote Control session). Bracketed paste keeps
- // line breaks inside one prompt; Enter submits it. Returns true, 'busy' (dialog or draft in the prompt) or false (no pane).
- function say({id,text}){
+ // line breaks inside one prompt. Claude Code turns a pasted image path into an image and needs a moment for it: an Enter
+ // sent at once is lost, so the text has to show up in the prompt first, and the prompt has to empty after Enter.
+ // Returns true, 'busy' (a dialog), {draft} (unsent text in the prompt; replace clears it first), 'stuck' or false (no pane).
+ async function say({id,text,files=[],replace=false}){
   const list=panes();
   for(const pid of processes(line=>line.includes(id))){const p=paneOf(pid,list);if(!p)continue;
-   if(!idle(p))return 'busy';
-   // load-buffer reads stdin: a long message does not hit tmux's command length limit.
-   execFileSync('tmux',['-S',p.sock,'load-buffer','-b','panel-say','-'],{input:text,timeout:5000,stdio:['pipe','ignore','ignore']});
-   tmux(p.sock,['paste-buffer','-p','-d','-b','panel-say','-t',p.pane]);tmux(p.sock,['send-keys','-t',p.pane,'Enter']);return true;}
+   let now=promptText(p);if(now===null)return 'busy';
+   if(now){if(!replace)return {draft:now};
+    for(let i=0;i<12&&now;i++){tmux(p.sock,['send-keys','-t',p.pane,'C-u']);await pause(120);now=promptText(p);}
+    if(now!=='')return now===null?'busy':{draft:now};}
+   // Text first, then the file paths: each paste lands before the next one.
+   for(const part of [text,files.length?'Приложенные файлы:\n'+files.map(f=>'- '+f.name+': '+f.path).join('\n'):''].filter(Boolean)){
+    // load-buffer reads stdin: a long message does not hit tmux's command length limit.
+    execFileSync('tmux',['-S',p.sock,'load-buffer','-b','panel-say','-'],{input:(promptText(p)?'\n':'')+part,timeout:5000,stdio:['pipe','ignore','ignore']});
+    tmux(p.sock,['paste-buffer','-p','-d','-b','panel-say','-t',p.pane]);
+    let last=null;await until(()=>{const v=promptText(p);const stable=v&&v===last;last=v;return stable;},6000);
+   }
+   for(let i=0;i<3;i++){tmux(p.sock,['send-keys','-t',p.pane,'Enter']);if(await until(()=>promptText(p)==='',4000))return true;}
+   return 'stuck';}
   return false;
  }
  // A choice dialog on the session's screen (a question from the model, a permission prompt). Claude writes the question

@@ -28,15 +28,29 @@ test('panel mail wakes the right Claude session in its tmux pane, once per messa
   assert.deepEqual(w.wake({cwd:dir,ids:['dddddddd-4444-4444-8444-444444444444'],exact:true,message:'m4',text:'wake-exact'}),{nopane:true},'a known session with no terminal to type into is reported');
   await new Promise(r=>setTimeout(r,300));assert.doesNotMatch(t('capture-pane','-p','-t','two'),/wake-exact/);
   // The owner's message from the panel chat is pasted into that session's pane, line breaks included.
-  assert.equal(w.say({id:b,text:'первая строка\nвторая строка'}),true);await new Promise(r=>setTimeout(r,300));
+  assert.equal(await w.say({id:b,text:'первая строка\nвторая строка'}),true);await new Promise(r=>setTimeout(r,300));
   const pane=t('capture-pane','-p','-t','two');assert.match(pane,/первая строка/);assert.match(pane,/вторая строка/);assert.doesNotMatch(t('capture-pane','-p','-t','one'),/первая строка/);
-  assert.equal(w.say({id:'cccccccc-3333-4333-8333-333333333333',text:'x'}),false);
+  assert.equal(await w.say({id:'cccccccc-3333-4333-8333-333333333333',text:'x'}),false);
   // A long message goes through stdin, past tmux's command length limit.
-  const long='я'.repeat(12000);assert.equal(w.say({id:b,text:long}),true);
+  const long='я'.repeat(12000);assert.equal(await w.say({id:b,text:long}),true);
   // The owner's unsent draft (or a permission dialog) is never typed over or answered.
   t('send-keys','-t','one','-l','черновик владельца');await new Promise(r=>setTimeout(r,300));
-  assert.equal(w.say({id:a,text:'чужой текст'}),'busy');assert.equal(w.wake({cwd:dir,ids:[a],message:'m5',text:'wake-busy'}),null);
+  assert.deepEqual(await w.say({id:a,text:'чужой текст'}),{draft:'черновик владельца'});assert.equal(w.wake({cwd:dir,ids:[a],message:'m5',text:'wake-busy'}),null);
   await new Promise(r=>setTimeout(r,200));assert.doesNotMatch(t('capture-pane','-p','-t','one'),/чужой текст|wake-busy/);
+  // Claude Code's prompt sign is followed by a no-break space: text after it is a draft, not a dialog.
+  const nb='12345678-8888-4888-8888-888888888888';
+  t('new-session','-d','-s','nbsp','-c',dir,'-x','200','-y','20',`exec -a claude node -e 'process.stdout.write("❯\u00a0[Image #6]Приложенные файлы\\n────────\\n");setInterval(()=>{},1000)' ${nb}`);await new Promise(r=>setTimeout(r,500));
+  assert.deepEqual(await w.say({id:nb,text:'x'}),{draft:'[Image #6]Приложенные файлы'});
+  // With the owner's consent the leftover text is cleared and the message goes in; files follow the text as paths.
+  assert.equal(await w.say({id:a,text:'замена',files:[{name:'shot.png',path:'/tmp/shot.png'}],replace:true}),true);
+  {const pane=t('capture-pane','-p','-t','one');assert.match(pane,/замена/);assert.match(pane,/- shot\.png: \/tmp\/shot\.png/);}
+  // A prompt that swallows Enter (Claude Code still attaching an image) gets Enter again; one that never empties is reported.
+  const slow='ffffffff-6666-4666-8666-666666666666',stuck='abababab-7777-4777-8777-777777777777';
+  writeFileSync(dir+'/slow.js',`let n=0,buf="";process.stdin.setRawMode(true);process.stdout.write("❯ ");process.stdin.on("data",d=>{const s=d.toString();if(s==="\\r"){if(++n<2||${JSON.stringify('NEVER')}===process.argv[2])return;process.stdout.write("\\r\\n"+buf+"\\r\\n❯ ");buf="";return;}buf+=s.replace(/\\x1b\\[20[01]~/g,"");process.stdout.write(s.replace(/\\x1b\\[20[01]~/g,""));})`);
+  t('new-session','-d','-s','slow','-c',dir,'-x','200','-y','20',`exec -a claude node ${dir}/slow.js ${slow}`);
+  t('new-session','-d','-s','stuck','-c',dir,'-x','200','-y','20',`exec -a claude node ${dir}/slow.js NEVER ${stuck}`);await new Promise(r=>setTimeout(r,600));
+  assert.equal(await w.say({id:slow,text:'с картинкой'}),true);assert.match(t('capture-pane','-p','-t','slow'),/с картинкой\s*\n❯/);
+  assert.equal(await w.say({id:stuck,text:'не уйдёт'}),'stuck');
   // A question on the session's screen: parsed into options, answered with arrow keys from the highlighted option.
   const q='eeeeeeee-5555-4555-8555-555555555555',keys=dir+'/keys.log';
   const screen=['────────',' ☐ Проверка','│ Как проверить диалог?','❯ 1. Браузер (Recommended)','     Ложный микрофон.','  2. Новый APK','  3. Оба варианта','  4. Type something.','────────','  5. Chat about this','Enter to select · ↑/↓ to navigate · Esc to cancel'].join('\\n');

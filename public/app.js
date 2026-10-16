@@ -99,7 +99,7 @@ async function api(url, data) {
   catch { if(host!==selectedHost){const e=Error('Сервер переключён');e.stale=true;throw e;}connectionFailed = true; indicator('connection', 'Нет связи с панелью', 'offline'); const e=Error('Нет связи с панелью. Проверяем соединение…');e.transient=true;e.user=Boolean(data);throw e; }
   let b;try{b=await readJson(r);}catch(e){if(data)e.user=true;if(host!==selectedHost){const s=Error('Сервер переключён');s.stale=true;throw s;}connectionFailed=true;indicator('connection','Нет связи с панелью','offline');throw e;}
   if(host!==selectedHost){const e=Error('Сервер переключён');e.stale=true;throw e;}
-  if (!r.ok) { if (r.status === 401) { csrf = ''; settings = null; show(false); indicator('connection', 'Требуется вход', 'unknown'); } const e=Error(b.error || 'Ошибка запроса');e.status=r.status;e.copy=Boolean(b.copy);throw e; }
+  if (!r.ok) { if (r.status === 401) { csrf = ''; settings = null; show(false); indicator('connection', 'Требуется вход', 'unknown'); } const e=Error(b.error || 'Ошибка запроса');e.status=r.status;e.copy=Boolean(b.copy);e.draft=b.draft;throw e; }
   if (settings) indicator('connection', 'Панель на связи', 'connected');
   if (connectionFailed && url === 'tasks') { connectionFailed = false; error(); }
   return b;
@@ -122,8 +122,8 @@ function emptyChat() {
   sessionSuggestions(box,viewGeneration);
 }
 // The live view of a Remote Control session stays the last row: new chat rows go above it.
-function chatAppend(el){const m=$('messages').querySelector(':scope > .live-mirror:not([data-state=closed])');if(m)$('messages').insertBefore(el,m);else $('messages').append(el);}
-function chatLast(){const m=$('messages').querySelector(':scope > .live-mirror:not([data-state=closed])');return m?m.previousElementSibling:$('messages').lastElementChild;}
+function chatAppend(el){const m=$('messages').querySelector(':scope > .live-mirror:not([data-state=closed])');if(m&&m===$('messages').lastElementChild)$('messages').insertBefore(el,m);else $('messages').append(el);}
+function chatLast(){const m=$('messages').querySelector(':scope > .live-mirror:not([data-state=closed])');return m&&m===$('messages').lastElementChild?m.previousElementSibling:$('messages').lastElementChild;}
 function message(text, cls = '') {
   $('messages').querySelector('.chat-empty')?.remove();
   const el = document.createElement('section'); el.className = 'message ' + cls; const agent=tasks.find(t=>t.id===selected)?.agent||selectedAgent; if(cls!=='user')el.dataset.agent=agent;
@@ -517,10 +517,13 @@ $('chatForm').onsubmit = async e => {
    catch(err){error(err);}finally{submitting=false;updateActivity();}
    return;
   }
-  if(mirrorTarget?.live&&!attachments.length&&$('prompt').value.trim()&&!submitting){
+  if(mirrorTarget?.live&&($('prompt').value.trim()||attachments.length)&&!uploading&&!submitting){
    submitting=true;updateActivity();const text=$('prompt').value;
    let toCopy=false;
-   try{await api('agent-sessions/say',{task:mirrorTarget.task,text});$('prompt').value='';writeSession(draftKey(),'');resizePrompt();$('draftState').textContent=tr('Отправлено в Remote Control');mirrorTarget.poke?.();error();}
+   // Unsent text left in the session's prompt (the owner's draft in the terminal, or a message that did not go through) is
+   // shown, and replaced only when the owner agrees.
+   const say=replace=>api('agent-sessions/say',{task:mirrorTarget.task,text,attachments:attachments.map(f=>f.id),...(replace?{replace:true}:{})});
+   try{try{await say(false);}catch(err){if(err.draft===undefined||!confirm(tr('В поле ввода сессии лежит неотправленный текст:')+'\n\n'+err.draft+'\n\n'+tr('Заменить его вашим сообщением?')))throw err;await say(true);}$('prompt').value='';attachments=[];renderAttachments();writeSession(draftKey(),'');writeSession(draftKey()+'-files','');resizePrompt();$('draftState').textContent=tr('Отправлено в Remote Control');mirrorTarget.poke?.();error();}
    catch(err){if(err.copy){toCopy=true;mirrorTarget.live=false;$('draftState').textContent=tr(err.message);}else error(err);}finally{submitting=false;updateActivity();}
    // The original closed or has no terminal: the message goes to its copy in the panel as an ordinary turn.
    if(!toCopy)return;
@@ -827,6 +830,10 @@ function mirrorSession(root,generation){
    target.live=Boolean(s.live);target.background=s.live&&Array.isArray(s.background)?s.background:[];target.dialog=s.live&&s.dialog||null;target.working=Boolean(s.live&&s.turnOpen&&!target.dialog);
    state.replaceChildren();if(target.dialog)state.textContent=tr('ждёт вашего ответа');else if(s.live&&s.turnOpen){state.append(mapElement('span',null,'working-bars'),document.createTextNode(' '+tr('работает в Remote Control')));}
    else state.textContent=tr(s.live?'в Remote Control · ждёт сообщения':s.untypable?'открыта без терминала · отвечает копия в панели':'закрыта · ответит копия в панели');
+   // Newer panel turns (the copy answered while the original was quiet) stay below: the live view takes its place by time.
+   const newer=s.live&&[...$('messages').children].some(e=>e!==box&&e.dataset.time&&e.dataset.time!=='9999'&&e.dataset.time>(s.updated||''));
+   if(s.live&&newer&&box.dataset.time!==s.updated){box.dataset.time=s.updated||'';const next=[...$('messages').children].find(e=>e!==box&&(!e.dataset.time||e.dataset.time>box.dataset.time));if(next)$('messages').insertBefore(box,next);}
+   else if(s.live&&!newer&&box.dataset.state!=='closed'&&box.dataset.time!=='9999'){box.dataset.time='9999';$('messages').append(box);}
    const was=box.dataset.state;box.dataset.state=s.live?(target.dialog?'live':s.turnOpen?'working':'live'):'closed';
    // A closed original is history: it folds and takes its place by time (rows of the current turn carry no time and are
    // newer), so the copy's turns stay below it.
@@ -981,9 +988,18 @@ $('prompt').addEventListener('paste',e=>{const files=[...e.clipboardData.files];
 $('chatForm').addEventListener('dragover',e=>{if(e.dataTransfer.types.includes('Files'))e.preventDefault();});
 $('chatForm').addEventListener('drop',e=>{if(e.dataTransfer.files.length){e.preventDefault();attachFiles([...e.dataTransfer.files]);}});
 window.addEventListener('resize',resizePrompt);
+// After an update of the interface the open tab reloads itself (the draft and its files stay in sessionStorage), so a
+// tablet left open for days never sends messages through old code. Not while the owner is typing, sending or in a dialog.
+let build='';
+async function checkBuild(){
+ if(!build||submitting||uploading||document.querySelector('dialog[open]')||(!document.hidden&&document.activeElement===$('prompt')&&$('prompt').value))return;
+ try{const r=await fetch('/api/meta',{cache:'no-store'});if(!r.ok)return;const b=await readJson(r);if(b.build&&b.build!==build){saveDraft();location.reload();}}catch{}
+}
+document.addEventListener('visibilitychange',()=>{if(!document.hidden)checkBuild();});
+setInterval(checkBuild,300000);
 // Installation name and mark come from data/config.json on the server.
 async function loadMeta(){
-  try{const r=await fetch('/api/meta');if(!r.ok)return;const b=await readJson(r);brand={...brand,...b.brand};
+  try{const r=await fetch('/api/meta');if(!r.ok)return;const b=await readJson(r);brand={...brand,...b.brand};build=b.build||'';
    try{if(!localStorage.getItem('panel-language')&&b.language&&b.language!==lang&&(b.language==='ru'||I18N[b.language])){localStorage.setItem('panel-language',b.language);location.reload();return;}}catch{}
   }catch{return;}
   $('brandName').textContent=tr(brand.name);$('brandSubtitle').textContent=tr(brand.subtitle||'');$('brandSubtitle').hidden=!brand.subtitle;document.title=tr(brand.name);

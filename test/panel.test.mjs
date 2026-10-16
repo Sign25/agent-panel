@@ -72,7 +72,7 @@ const switchedTask=(await request('tasks')).body.find(t=>t.id===switched.body.id
 await request('stop',{task:switched.body.id});await new Promise(r=>setTimeout(r,2200));
 assert.equal((await request('tasks',{project:p.id,prompt:'x',agent:'unknown',previous:claudeTask})).status,400);
 // Installation metadata and project maps are data, not code.
-const meta=await request('meta',undefined,{cookie:''});assert.equal(meta.status,200);assert.equal(typeof meta.body.brand.name,'string');
+const meta=await request('meta',undefined,{cookie:''});assert.equal(meta.status,200);assert.equal(typeof meta.body.brand.name,'string');assert.match(meta.body.build,/^\d+\.\d+\.\d+\.\d+$/,'interface build stamp for open tabs');
 assert.deepEqual((await request('agents')).body.map(a=>a.id),['codex','claude']);
 const usage=(await request('claude-usage')).body;assert.equal(usage.available,true);assert.equal(usage.seven_day.percent,21);assert.equal(usage.five_hour.percent,2);assert.equal(usage.seven_day.resetsAt,'2026-10-12T11:00:00Z');
 assert.equal((await request('node-info')).body.origin,undefined);

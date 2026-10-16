@@ -258,7 +258,8 @@ const server=http.createServer(async(req,res)=>{res.setHeader('X-Content-Type-Op
  if(u.pathname==='/api/mail-tool'&&req.method==='POST'){
   const input=await body(req);return json(res,200,await mesh.tool(input.cap,input.name,input.args));
  }
- if(u.pathname==='/api/meta'&&req.method==='GET')return json(res,200,{brand:config.brand,language:config.language});
+ // build changes whenever the interface files are replaced: an open tablet tab reloads itself instead of running old code.
+ if(u.pathname==='/api/meta'&&req.method==='GET')return json(res,200,{brand:config.brand,language:config.language,build:['index.html','app.js','style.css','i18n.js'].map(f=>{try{return statSync(path.join(root,'public',f)).mtimeMs.toFixed(0);}catch{return '0';}}).join('.')});
  // Node token: every API on a node; on the central panel only the local session adapter (registration, origin), from loopback.
  const loopbackReq=/^(127\.|::1$|::ffff:127\.)/.test(req.socket.remoteAddress||'')&&!req.headers['x-forwarded-for'];
  const nodeAuth=secureEqual(req.headers['x-panel-node-token'],mesh.secret)&&(process.env.PANEL_NODE_MODE==='1'||loopbackReq&&['/api/external-session','/api/node-info'].includes(u.pathname));
@@ -317,10 +318,15 @@ const server=http.createServer(async(req,res)=>{res.setHeader('X-Content-Type-Op
   if(sessionsRoute[2]==='say'&&req.method==='POST'){const b=await body(req);const t=stmt('SELECT * FROM tasks WHERE id=?',String(b.task||''))[0];
    const root=t&&stmt('SELECT source_session,agent FROM tasks WHERE session_id=? AND source_session IS NOT NULL ORDER BY created LIMIT 1',t.session_id||t.id)[0];
    if(!root||(root.agent||'codex')!=='claude')return json(res,404,{error:'Сессия не найдена'});
-   const text=String(b.text||'').trim();if(!text||text.length>20000)throw Error('Введите сообщение');
+   // Attached files are already on this server (panel uploads of the chat's project): their paths are pasted after the
+   // text; Claude Code attaches pasted image paths as images.
+   const files=(Array.isArray(b.attachments)?b.attachments:[]).slice(0,5).map(id=>stmt('SELECT name,path FROM uploads WHERE id=? AND project=?',String(id),t.project)[0]).filter(Boolean);
+   const text=String(b.text||'').trim();if((!text&&!files.length)||text.length>20000)throw Error('Введите сообщение');
    if(!agents.get('claude').sessions.live(root.source_session))return json(res,409,{error:'Сессия закрыта в Remote Control: сообщение отправлено её копии в панели.',copy:true});
-   const said=waker.say({id:root.source_session,text});
-   if(said==='busy')return json(res,409,{error:'В терминале сессии открыт диалог или набран черновик. Ответьте там или очистите поле ввода и повторите.'});
+   const said=await waker.say({id:root.source_session,text,files,replace:b.replace===true});
+   if(said==='busy')return json(res,409,{error:'Сессия показывает в терминале вопрос или разрешение. Ответьте на него в карточке выше или в терминале и повторите.'});
+   if(said?.draft!==undefined)return json(res,409,{error:'В поле ввода сессии остался неотправленный текст.',draft:said.draft.slice(0,2000)});
+   if(said==='stuck')return json(res,409,{error:'Сообщение вставлено в поле ввода сессии, но она его не приняла. Повторите отправку: панель заменит текст в поле.'});
    if(!said)return json(res,409,{error:'Сессия открыта без терминала (Remote Control-сервер), напечатать в неё нельзя: сообщение отправлено её копии в панели.',copy:true});
    return json(res,200,{ok:true});}
   if(sessionsRoute[2]==='key'&&req.method==='GET')return json(res,200,await keySessions(u.searchParams.get('fresh')==='1'));
